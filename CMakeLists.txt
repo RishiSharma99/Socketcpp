@@ -15,7 +15,6 @@ PUBLIC
     BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
 
     FILES
-        src/add.cppm
         src/socket.cppm
 PRIVATE
 

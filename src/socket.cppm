@@ -67,12 +67,12 @@ namespace socketcpp {
 
         auto family() const noexcept -> AddressFamily {
             return do_visit(
-                [](const sockaddr_in& e) {return AddressFamily::Ipv4;},
-                [](const sockaddr_in6& e) {return AddressFamily::Ipv6;}
+                [](const sockaddr_in&) {return AddressFamily::Ipv4;},
+                [](const sockaddr_in6&) {return AddressFamily::Ipv6;}
             );
         }
 
-        auto address_string() const noexcept -> std::string {
+        auto address_string() const -> std::string {
             return do_visit(
                 [](const sockaddr_in& e) -> std::string  { 
                     // Create an address string on heap and return as managed string
@@ -81,7 +81,7 @@ namespace socketcpp {
                     addrs.resize_and_overwrite(INET_ADDRSTRLEN, 
                         [&e](char* buf, size_t buf_size) {
 
-                            auto *res = inet_ntop(AF_INET, &e.sin_addr, buf, buf_size);
+                            auto *res = inet_ntop(AF_INET, &e.sin_addr, buf, static_cast<socklen_t>(buf_size));
                             assert(res != nullptr && "inet_ntop failed for v4");
 
                             return strlen(buf);
@@ -97,7 +97,7 @@ namespace socketcpp {
                     addrs.resize_and_overwrite(INET6_ADDRSTRLEN, 
                         [&e](char* buf, size_t buf_size) {
 
-                            auto *res = inet_ntop(AF_INET6, &e.sin6_addr, buf, buf_size);
+                            auto *res = inet_ntop(AF_INET6, &e.sin6_addr, buf, static_cast<socklen_t>(buf_size));
                             assert(res != nullptr && "inet_ntop failed for v6"); 
 
                             return strlen(buf);
@@ -112,8 +112,8 @@ namespace socketcpp {
 
         auto port() const noexcept -> int {
             return do_visit(
-                [](const sockaddr_in& e) {return ntohs(e.sin_port);},
-                [](const sockaddr_in6& e) {return ntohs(e.sin6_port);}
+                [](const auto& e) {return ntohs(e.sin_port);},
+                [](const auto& e) {return ntohs(e.sin6_port);}
             );
         }
 
@@ -136,9 +136,9 @@ namespace socketcpp {
                     },
                     [](const sockaddr_in6& l, const sockaddr_in6& r) -> bool {
                         return l.sin6_port == r.sin6_port 
-                            && memcmp(&l.sin6_addr, &r.sin6_addr, sizeof(l.sin6_addr));
+                            && memcmp(&l.sin6_addr, &r.sin6_addr, sizeof(l.sin6_addr)) == 0;
                     },
-                    [](auto &e, auto& r) {
+                    [](auto &, auto&) {
                         return false;
                     }
                 }, left.m_addr, right.m_addr);
@@ -155,6 +155,8 @@ namespace socketcpp {
             s.sin_port = htons(port);
 
             // string_view are not guaranteed to be null terminated
+            if (address.size() > INET_ADDRSTRLEN)
+                return std::unexpected(std::make_error_code(std::errc::invalid_argument));
             char safe_buffer[INET_ADDRSTRLEN];
             memcpy(safe_buffer, address.data(), address.size());
             safe_buffer[address.size()] = '\0';
@@ -182,6 +184,8 @@ namespace socketcpp {
             s.sin6_port = htons(port);
 
             // string_view are not guaranteed to be null terminated
+            if (address.size() > INET6_ADDRSTRLEN)
+                return std::unexpected(std::make_error_code(std::errc::invalid_argument));
             char safe_buffer[INET6_ADDRSTRLEN];
             memcpy(safe_buffer, address.data(), address.size());
             safe_buffer[address.size()] = '\0';
@@ -266,7 +270,9 @@ namespace socketcpp {
                 close(m_fd);
         }
 
-        auto bind(const IpAddress& addrs) && -> std::expected<SocketHandle, std::error_code> const {
+        auto leak_raw_fd() const noexcept -> int { return m_fd;}
+
+        auto bind(const IpAddress& addrs) && -> std::expected<SocketHandle, std::error_code> {
             auto [addr, addrlen] = addrs.get_sockaddr();
             auto res = ::bind(m_fd, addr, addrlen);
 
@@ -277,7 +283,7 @@ namespace socketcpp {
             return std::move(*this);
         }
 
-        auto listen(int backlog = SOMAXCONN) && -> std::expected<SocketHandle, std::error_code> const {
+        auto listen(int backlog = SOMAXCONN) && -> std::expected<SocketHandle, std::error_code>{
             auto res = ::listen(m_fd, backlog);
             if (res == -1) {
                 return system_error();
@@ -286,7 +292,7 @@ namespace socketcpp {
             return std::move(*this);
         }
 
-        auto accept() -> std::expected<std::pair<SocketHandle, IpAddress>, std::error_code> const {
+        auto accept() -> std::expected<std::pair<SocketHandle, IpAddress>, std::error_code> {
             struct sockaddr_storage s;
             socklen_t addr_size = sizeof(s);
             auto res = ::accept(m_fd, reinterpret_cast<sockaddr *>(&s), &addr_size);
@@ -326,7 +332,7 @@ namespace socketcpp {
     export [[nodiscard]]
     auto create_socket(AddressFamily domain, SockType type) -> std::expected<SocketHandle, std::error_code> 
     {
-        auto fd = socket(static_cast<int>(domain), static_cast<int>(type), 0);
+        auto fd = socket(static_cast<int>(domain), static_cast<int>(type) | SOCK_CLOEXEC, 0);
         if (fd < 0) // error
         {
             return system_error();
